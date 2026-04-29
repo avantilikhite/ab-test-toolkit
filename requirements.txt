@@ -1,0 +1,7 @@
+numpy>=1.24
+scipy>=1.10
+pandas>=2.0
+plotly>=5.10
+streamlit>=1.28
+# Install the local ab_test_toolkit package so app/app.py can import it
+-e .

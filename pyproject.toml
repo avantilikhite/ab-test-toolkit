@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ab-test-toolkit"
+version = "0.1.0"
+description = "Production-grade Python toolkit for designing, auditing, and analyzing A/B experiments"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Avanti Likhite" },
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+viz = [
+    "plotly>=5.10",
+]
+app = [
+    "streamlit>=1.28",
+    "plotly>=5.10",
+]
+notebook = [
+    "jupyter",
+    "nbconvert",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "hypothesis>=6.80",
+    "ruff>=0.10",
+    "plotly>=5.10",
+    "streamlit>=1.28",
+    "jupyter",
+    "nbconvert",
+    "nbformat",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"ab_test_toolkit/__init__.py" = ["E402"]
+
+[tool.coverage.run]
+source = ["ab_test_toolkit"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 90
