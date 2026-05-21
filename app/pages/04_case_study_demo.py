@@ -30,6 +30,7 @@ from app_utils import (
     info_callout,
     metric_row,
     page_header,
+    render_diagnostics_card,
     render_header_credit,
     render_sidebar_settings,
     section_header,
@@ -107,32 +108,84 @@ control = df.loc[df["group"] == "control", "value"].to_numpy()
 treatment = df.loc[df["group"] == "treatment", "value"].to_numpy()
 
 # ── Step 1: SRM check ──────────────────────────────────────────────────────
-section_header("Sample Ratio Mismatch", "Step 1 — Verify traffic was split correctly", "🔄")
-info_callout(
-    "Before looking at any results, verify that traffic was split correctly. "
-    "An SRM would indicate a bug in the randomisation layer.",
-    "info",
-)
-srm_ratio_input = st.slider(
-    "Planned allocation (% to control)",
-    min_value=10,
-    max_value=90,
-    value=50,
-    step=5,
-    help="The intended traffic split. 50 = equal 50/50 split. 80 = 80% control / 20% treatment.",
-)
+section_header("Diagnostics", "Step 1 — Verify the experiment is interpretable", "🩺")
+
+with st.expander("⚙️ Allocation settings", expanded=False):
+    srm_ratio_input = st.slider(
+        "Planned allocation (% to control)",
+        min_value=10, max_value=90, value=50, step=5,
+        help="The intended traffic split. 50 = equal 50/50. 80 = 80% control / 20% treatment.",
+    )
 srm_expected = (srm_ratio_input / 100, 1 - srm_ratio_input / 100)
 srm_result = check_srm(observed=(len(control), len(treatment)), expected_ratio=srm_expected)
+_seg_result_for_card = segment_analysis(df) if "segment" in df.columns else None
+_novelty_for_card = check_novelty(df) if "day" in df.columns else None
+
+# Build the diagnostics list
+_diag: list[dict] = []
+
+# SRM
 if srm_result.has_mismatch:
-    info_callout(
-        f"SRM detected — χ² = {srm_result.chi2_statistic:.2f}, p = {srm_result.p_value:.4f}",
-        "warning",
-    )
+    p = srm_result.p_value
+    _tier = "severe" if p < 1e-6 else "detected" if p < 1e-3 else "borderline"
+    _diag.append({
+        "name": "Traffic split (SRM)",
+        "status": "fail",
+        "summary": f"χ² = {srm_result.chi2_statistic:.2f}, p = {p:.6f} · {_tier}",
+        "detail": (
+            "Randomisation has broken; no statistical adjustment can recover validity. "
+            "Do not interpret these results. Fix the engineering cause and re-run."
+        ),
+    })
 else:
-    info_callout(
-        f"No SRM — χ² = {srm_result.chi2_statistic:.2f}, p = {srm_result.p_value:.4f}. Traffic split is clean.",
-        "success",
-    )
+    _diag.append({
+        "name": "Traffic split (SRM)",
+        "status": "pass",
+        "summary": f"χ² = {srm_result.chi2_statistic:.2f}, p = {srm_result.p_value:.4f}",
+    })
+
+# Simpson's Paradox
+if _seg_result_for_card is not None:
+    if _seg_result_for_card.simpsons_paradox:
+        _diag.append({
+            "name": "Simpson's Paradox",
+            "status": "fail",
+            "summary": "aggregate contradicts segments",
+            "detail": (
+                f"{_seg_result_for_card.simpsons_details} The headline result is misleading "
+                f"due to a composition effect across segments. Trust the within-segment effects."
+            ),
+        })
+    else:
+        _diag.append({
+            "name": "Simpson's Paradox",
+            "status": "pass",
+            "summary": "segments consistent",
+        })
+
+# Novelty
+if _novelty_for_card is not None and _novelty_for_card.details not in (
+    "No day column — novelty check skipped.",
+    "Fewer than 3 days of data — novelty check skipped.",
+):
+    if _novelty_for_card.has_novelty:
+        _diag.append({
+            "name": "Novelty effect",
+            "status": "warn",
+            "summary": f"early/late = {_novelty_for_card.ratio:.2f}×",
+            "detail": (
+                f"{_novelty_for_card.details} Heuristic flag, not a statistical test. If real, "
+                f"re-analyse with the first 3–7 days excluded as a burn-in period."
+            ),
+        })
+    else:
+        _diag.append({
+            "name": "Novelty effect",
+            "status": "pass",
+            "summary": f"early/late = {_novelty_for_card.ratio:.2f}× (under 2.0× threshold)",
+        })
+
+render_diagnostics_card(_diag)
 
 # ── Step 2: Frequentist analysis ───────────────────────────────────────────
 section_header("Frequentist Analysis (Z-test)", "Step 2 — p-value and confidence interval", "📐")
@@ -198,9 +251,7 @@ info_callout(
     "info",
 )
 if "segment" in df.columns:
-    seg_result = segment_analysis(df)
-    if seg_result.simpsons_paradox:
-        info_callout(f"Simpson's Paradox: {seg_result.simpsons_details}", "warning")
+    seg_result = _seg_result_for_card  # already computed for the Diagnostics card
     for seg in seg_result.segment_results:
         adj_p = seg.get("p_value_adjusted", seg["p_value"])
         sig_color = "green" if adj_p < alpha else "gray"
@@ -223,16 +274,7 @@ info_callout(
     "info",
 )
 
-novelty_result = None
-if "day" in df.columns:
-    novelty_result = check_novelty(df)
-    if novelty_result.has_novelty:
-        info_callout(novelty_result.details, "warning")
-    else:
-        info_callout(
-            f"No novelty effect detected (early/late ratio: {novelty_result.ratio:.2f}).",
-            "success",
-        )
+novelty_result = _novelty_for_card  # already computed for the Diagnostics card
 
 rec = generate_recommendation(
     frequentist=freq_result,

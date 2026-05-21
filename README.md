@@ -164,6 +164,32 @@ Every recommendation includes **context-aware next steps** and **supporting metr
 
 ---
 
+## Known limitations & next steps
+
+This toolkit is a deliberately bounded artifact: a **fixed-horizon, single-experiment analysis library** with strong diagnostics and a pre-registration manifest. The list below separates *deliberate scope decisions* (won't build, by design) from *next steps* (would build with more time, in priority order). The split is intentional — it's more credible to document non-goals than to silently ship missing features.
+
+### Deliberate scope decisions (out of scope by design)
+
+- **Sequential testing / always-valid inference (mSPRT, group-sequential with alpha-spending, confidence sequences).** This is a fixed-horizon analyzer. Adding a second inferential framework would double the surface area and dilute the existing one. If you need to peek and act on early results, plug into a dedicated sequential framework — not this toolkit.
+- **Layered assignment, mutual exclusion, experiment-collision detection.** Platform infrastructure (Statsig, LaunchDarkly, GrowthBook, in-house feature flags). This toolkit *consumes* assignments and *analyzes* outcomes; it does not produce assignments. Building a layered-assignment service would be a different project entirely.
+- **Quasi-experimental methods (RDD, DiD, synthetic control, IV).** A different statistical domain with mature dedicated packages (`causalpy`, `pysyncon`, `linearmodels`). Bundling them would dilute the toolkit's identity as an A/B analyzer. The interview guide covers them as adjacent knowledge for the same reason — they're *adjacent*, not core.
+- **Long-run holdback workflow shell.** The statistical machinery is already supported (a holdback is just a long-running A/B with a frozen control). What's missing is the *orchestration* — a workflow page for monthly re-analysis with drift tracking over months. That's a workflow concern, not a statistical hole.
+
+### Next steps (would build with more time, in priority order)
+
+1. **Manifest schema v3.** Extend the pre-registration manifest with `metric_families` (declared primary / secondary / guardrail panel), `correction_policy` (Holm / BH / none), `interim_analysis_allowed` (bool, gates early-stop behavior), and `kurtosis_estimate` (informs power inflation). Foundation for items 2–4.
+2. **Delta-method ratio analyzer + ratio-shape detection.** Biggest correctness risk. Add a `ratio_metric_test` with delta-method variance plus a bootstrap fallback. Detect when input has multiple rows per user and refuse to run Welch with a clear error pointing the user to the ratio analyzer.
+3. **Planned-N gate on the recommendation card.** If `n_observed < n_planned` from the manifest, downgrade output to "interim / exploratory" and refuse to emit a Ship recommendation. One-day fix; turns the documented "no peeking" disclaimer into an enforced guardrail.
+4. **Cross-family correction in the recommendation engine.** Apply Holm (or BH if pre-registered) across the declared primary+secondary panel. Guardrails remain one-sided non-inferiority checks, not co-primary tests. Small once the manifest field from item 1 exists.
+5. **Historical variance estimator with stability warning.** A helper that ingests N days of historical metric data, returns σ̂ with a stability CI, and warns when N_days is too small or variance is non-stationary. Closes a gap in the power calculator's input contract.
+6. **Kurtosis warning + bootstrap power path.** Power calculator emits a warning when excess kurtosis > 5, and offers a Monte-Carlo bootstrap power simulation as the rigorous alternative to the closed-form formula. Diagnostic, not silent inflation.
+
+### Status
+
+These items are intentionally documented rather than implemented. The toolkit's current scope is the deliberate choice; the next-steps list captures the roadmap that would be defended in a follow-up planning session. Items in the "deliberate scope" bucket are *not* roadmap entries — they are calibrated refusals.
+
+---
+
 ## Quick Start
 
 ### Installation

@@ -196,9 +196,6 @@ try:
 
     st.markdown("")
     days_str = f"approximately **{result.estimated_days:,} days**" if result.estimated_days else "an indeterminate duration"
-    power_note = ""
-    if result.sample_inflation_pct > 5:
-        power_note = f" Note: the unequal allocation inflates required sample size by **{result.sample_inflation_pct:.1f}%** vs balanced — consider a 1:1 ratio if traffic is scarce."
     if mde_mode == "relative" and not is_proportion:
         mde_display = f"{mde:.1%} relative (= {effective_mde:.2f} absolute)"
     else:
@@ -207,9 +204,61 @@ try:
         f"You need <strong>{result.n_total:,}</strong> total observations "
         f"({result.n_control:,} control + {result.n_treatment:,} treatment) "
         f"to detect a {mde_display} effect, "
-        f"running for {days_str} at α={alpha}, power={power:.0%}.{power_note}",
+        f"running for {days_str} at α={alpha}, power={power:.0%}.",
         "info",
     )
+
+    # Allocation-ratio severity warning. Unequal allocation is a deliberate
+    # design choice with real costs: sample inflation, reduced SRM detection
+    # power, and a smaller arm that caps your effective MDE. At extreme ratios
+    # the configuration is almost always a ramp/canary setting that the user
+    # is mistaking for an analysis split. Tier severity by inflation %, and
+    # adapt the text to the direction of the skew (more control vs more treatment).
+    if result.sample_inflation_pct > 5:
+        inflation = result.sample_inflation_pct
+        ratio = allocation_ratio
+        if ratio < 1:
+            split_desc = f"{1 / (1 + ratio):.0%} control / {ratio / (1 + ratio):.0%} treatment"
+            intent_note = (
+                "This is the classic *canary / ramp* configuration — limiting exposure to a "
+                "potentially harmful treatment. **It is rarely the right split for a primary "
+                "analysis.** Ramp to 50/50 once initial guardrails clear, then run the analysis "
+                "on the balanced phase. Mixing ramp-phase and balanced-phase data biases the "
+                "result toward the population that was exposed in each window."
+            )
+        else:
+            split_desc = f"{1 / (1 + ratio):.0%} control / {ratio / (1 + ratio):.0%} treatment"
+            intent_note = (
+                "More treatment than control is **unusual** — most experiments default to equal "
+                "or control-heavy splits. Verify this is intentional and not a misconfiguration. "
+                "If you're trying to learn more about treatment behaviour, a follow-up balanced "
+                "experiment after a ship decision is usually a better design."
+            )
+
+        common_cost = (
+            f"The smaller arm caps your effective sensitivity — your minimum detectable effect "
+            f"is essentially set by whichever arm has fewer users, not by total N. "
+            f"Sample size inflates by **{inflation:.1f}%** vs balanced. SRM detection also loses "
+            f"power at extreme ratios (the chi-square test is most sensitive near 50/50). "
+        )
+
+        if inflation > 40:
+            info_callout(
+                f"🔴 **Extreme allocation ({split_desc}).** {common_cost}{intent_note}",
+                "error",
+            )
+        elif inflation > 15:
+            info_callout(
+                f"🟠 **Significantly unequal allocation ({split_desc}).** {common_cost}{intent_note}",
+                "warning",
+            )
+        else:
+            info_callout(
+                f"ℹ️ **Mildly unequal allocation ({split_desc}).** Sample size inflates by "
+                f"**{inflation:.1f}%** vs balanced. Acceptable trade-off if you have a specific "
+                f"reason (risk mitigation, multi-arm test). Otherwise consider 1:1.",
+                "info",
+            )
 
     if result.estimated_days is not None and result.estimated_days < 7:
         st.info(

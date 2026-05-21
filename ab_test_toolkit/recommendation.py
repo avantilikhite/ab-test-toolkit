@@ -386,12 +386,16 @@ def generate_recommendation(
     if srm.has_mismatch:
         decision = "Inconclusive"
         reason = (
-            "A Sample Ratio Mismatch was detected — the observed traffic split does not match "
-            "the intended allocation. This indicates a systematic problem with randomization, "
-            "making all results untrustworthy."
+            "Sample Ratio Mismatch detected — the observed traffic split does not match the "
+            "intended allocation. Randomisation has broken, which invalidates the experiment's "
+            "core assumption. Every metric on the affected arm is contaminated (not just the "
+            "primary), confidence intervals no longer have their stated coverage, and there is "
+            "no statistical adjustment that can restore validity. Fix the engineering cause "
+            "(assignment service, attrition pipeline, bot filtering, or a deploy during the "
+            "experiment window) and re-run."
         )
         signal_strength = "none"
-        flags.append("Sample Ratio Mismatch detected")
+        flags.append("Sample Ratio Mismatch detected — analysis invalid")
     elif (
         segmentation is not None
         and segmentation.simpsons_paradox

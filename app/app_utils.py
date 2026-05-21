@@ -139,6 +139,15 @@ def render_sidebar_settings() -> None:
     )
     st.session_state["practical_significance_threshold"] = practical_threshold
 
+    with st.sidebar.expander("🔒 Privacy note"):
+        st.markdown(
+            "Personal/educational toolkit, not a hosted enterprise service. "
+            "Don't upload PII (names, emails, IPs, raw account IDs) or restricted data. "
+            "Files stay in your session's memory only — not written to disk — but you're "
+            "responsible for ensuring your environment (browser, Streamlit Cloud, logs) "
+            "is acceptable for what you upload."
+        )
+
 
 def render_header_credit() -> None:
     """Inject a fixed-position 'Avanti Likhite · LinkedIn · GitHub' credit
@@ -272,6 +281,57 @@ def info_callout(text: str, callout_type: str = "info") -> None:
             padding:0.9rem 1.2rem;margin:0.5rem 0;font-size:0.92rem;color:#333;">
             {emoji} {text}
         </div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_diagnostics_card(checks: list[dict]) -> None:
+    """Render a unified Diagnostics card.
+
+    Each `check` is a dict with keys:
+        name (str): label, e.g. "Traffic split (SRM)"
+        status (str): "pass" | "warn" | "fail"
+        summary (str, optional): compact right-aligned summary, e.g. "χ² = 0.04, p = 0.84"
+        detail (str, optional): inline detail shown for warn / fail rows only
+
+    Passes render as a quiet single line; warnings and failures get an indented
+    colored detail block immediately below the row. Skipped checks should be
+    omitted from the list by the caller.
+    """
+    if not checks:
+        return
+
+    icons = {"pass": "✅", "warn": "⚠️", "fail": "❌"}
+    detail_colors = {"warn": "#a25210", "fail": "#a02323"}
+
+    rows_html = []
+    for i, c in enumerate(checks):
+        icon = icons.get(c["status"], "•")
+        is_last = i == len(checks) - 1
+        border = "" if is_last else "border-bottom:1px solid #f0f2f5;"
+        rows_html.append(
+            f'<div style="display:flex;align-items:center;padding:0.55rem 0;{border}">'
+            f'<span style="font-size:1.05rem;margin-right:0.7rem;">{icon}</span>'
+            f'<span style="flex:1;color:#222;font-size:0.93rem;">{c["name"]}</span>'
+            f'<span style="color:#888;font-size:0.82rem;font-variant-numeric:tabular-nums;">{c.get("summary","")}</span>'
+            f'</div>'
+        )
+        if c.get("detail") and c["status"] in ("warn", "fail"):
+            color = detail_colors[c["status"]]
+            rows_html.append(
+                f'<div style="margin-left:1.85rem;padding:0 0 0.6rem 0;'
+                f'color:{color};font-size:0.87rem;line-height:1.55;">{c["detail"]}</div>'
+            )
+
+    st.markdown(
+        f'<div style="background:#ffffff;border:1px solid #e2e6ed;border-radius:12px;'
+        f'padding:1rem 1.3rem;margin:1rem 0;box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+        f'<div style="font-size:0.95rem;font-weight:600;color:#1A1A2E;'
+        f'margin-bottom:0.5rem;display:flex;align-items:center;">'
+        f'<span style="font-size:1.1rem;margin-right:0.5rem;">🩺</span><span>Diagnostics</span>'
+        f'</div>'
+        f'{"".join(rows_html)}'
+        f'</div>',
         unsafe_allow_html=True,
     )
 

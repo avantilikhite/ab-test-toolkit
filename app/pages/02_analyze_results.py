@@ -28,6 +28,7 @@ from app_utils import (
     info_callout,
     metric_row,
     page_header,
+    render_diagnostics_card,
     render_header_credit,
     render_sidebar_settings,
     section_header,
@@ -36,6 +37,29 @@ from app_utils import (
 
 render_header_credit()
 render_sidebar_settings()
+
+
+def _srm_check_to_dict(srm_result) -> dict:
+    """Convert an SRM result into a Diagnostics-card row dict."""
+    chi2 = srm_result.chi2_statistic
+    p = srm_result.p_value
+    if not srm_result.has_mismatch:
+        return {
+            "name": "Traffic split (SRM)",
+            "status": "pass",
+            "summary": f"χ² = {chi2:.2f}, p = {p:.4f}",
+        }
+    tier = "severe" if p < 1e-6 else "detected" if p < 1e-3 else "borderline"
+    return {
+        "name": "Traffic split (SRM)",
+        "status": "fail",
+        "summary": f"χ² = {chi2:.2f}, p = {p:.6f} · {tier}",
+        "detail": (
+            "Randomisation has broken; no statistical adjustment can recover validity. "
+            "Do not interpret these results. Fix the engineering cause (assignment, "
+            "attrition pipeline, bot filtering, or a deploy during the window) and re-run."
+        ),
+    }
 
 
 def _render_recommendation(rec):
@@ -144,12 +168,23 @@ def _render_recommendation(rec):
 
 page_header("📊", "Analyze Results", "Upload CSV or enter summary stats for full frequentist & Bayesian analysis.")
 
-info_callout(
-    "**Trustworthy analysis is pre-registered analysis.** Before uploading data, ideally fix "
-    "(in writing) your primary metric, MDE, sample size, decision threshold, and analysis plan. "
-    "This toolkit cannot enforce pre-registration — running multiple specifications until one "
-    "looks favourable inflates false-positive rates and invalidates the reported confidence levels.",
-    "info",
+st.markdown(
+    """<details style="background:linear-gradient(135deg,#1A1A2E 0%,#16213e 100%);
+        border-radius:12px;padding:0.6rem 1.5rem;margin-top:-1rem;margin-bottom:1.5rem;
+        color:#a0b0c8;cursor:pointer;">
+        <summary style="color:#fff;font-size:0.95rem;padding:0.4rem 0;font-weight:500;
+            list-style:none;outline:none;">
+            ✍️ Consider pre-registration
+        </summary>
+        <p style="margin:0.6rem 0 0.4rem 0;font-size:0.9rem;line-height:1.6;color:#cbd5e1;">
+            <strong style="color:#fff;">Trustworthy analysis is pre-registered analysis.</strong>
+            Before uploading data, ideally fix (in writing) your primary metric, MDE, sample size,
+            decision threshold, and analysis plan. This toolkit cannot enforce pre-registration —
+            running multiple specifications until one looks favourable inflates false-positive
+            rates and invalidates the reported confidence levels.
+        </p>
+    </details>""",
+    unsafe_allow_html=True,
 )
 
 # ── Data input toggle ────────────────────────────────────────────────────────
@@ -170,123 +205,121 @@ is_proportion = True
 has_covariate = False
 has_segment = False
 
-# ── Decision-engine advanced settings ──────────────────────────────────────
-with st.expander("⚙️ Advanced decision settings (optional)"):
-    st.caption(
-        "Tighten or relax the recommendation engine. Defaults match the documented "
-        "decision matrices; change these only with stakeholder alignment, ideally "
-        "captured in a pre-reg manifest below."
-    )
+def _render_preregistration_block(key_suffix: str) -> None:
+    """Render the manifest uploader and (optional) decision-engine policy knobs.
 
-    # Process manifest upload FIRST so defaults can be seeded from it.
-    st.markdown("**Pre-registration manifest**")
-    st.caption(
-        "Upload the JSON manifest you exported from the Experiment Design page. "
-        "Registered policy fields will be auto-loaded into the controls below, "
-        "and any drift between the registered plan and the as-run analysis will "
-        "be flagged on the recommendation."
-    )
-    _manifest_upload = st.file_uploader("Pre-reg manifest (JSON)", type=["json"], key="manifest_upload")
-    if _manifest_upload is not None:
-        try:
-            import json as _json
-            _loaded = _json.loads(_manifest_upload.read())
-            st.session_state["uploaded_manifest"] = _loaded
-            # Auto-load policy fields from the manifest into session state so
-            # the controls below pick them up as defaults.
-            for _k in (
-                "loss_tolerance",
-                "allow_ship_with_monitoring",
-                "monitoring_prob_threshold",
-                "twyman_min_baseline",
-                "practical_significance_threshold",
-                "lift_warning_threshold",
-                "alpha",
-            ):
-                if _k in _loaded and _loaded[_k] is not None:
-                    st.session_state[_k] = _loaded[_k]
-            st.success(
-                f"Manifest loaded ({_loaded.get('experiment_id', 'unnamed')}). "
-                f"Policy fields applied to the controls below; drift will be flagged on the result."
-            )
-        except Exception as _e:
-            st.error(f"Could not parse manifest JSON: {_e}")
+    Rendered just above each input mode's analysis trigger so the user can
+    register a pre-committed plan immediately before the analysis runs.
+    `key_suffix` keeps widget keys unique across the two mode call sites.
+    """
+    # Dynamic expander label: surface manifest status without forcing expansion
+    _active_manifest = st.session_state.get("uploaded_manifest")
+    if _active_manifest is not None:
+        _exp_id = _active_manifest.get("experiment_id", "unnamed")
+        _preregistration_label = f"📋 Pre-registration manifest — active: {_exp_id}"
+    else:
+        _preregistration_label = "📋 Pre-registration manifest (optional)"
+
+    with st.expander(_preregistration_label, expanded=False):
+        st.caption(
+            "Upload the JSON manifest you exported from the Experiment Design page; "
+            "registered policy fields will auto-load and any drift between the registered plan "
+            "and the as-run analysis will be flagged on the recommendation."
+        )
+        _manifest_upload = st.file_uploader(
+            "Manifest JSON",
+            type=["json"],
+            key=f"manifest_upload_{key_suffix}",
+            label_visibility="collapsed",
+        )
+        if _manifest_upload is not None:
+            try:
+                import json as _json
+                _loaded = _json.loads(_manifest_upload.read())
+                st.session_state["uploaded_manifest"] = _loaded
+                for _k in (
+                    "loss_tolerance",
+                    "allow_ship_with_monitoring",
+                    "monitoring_prob_threshold",
+                    "twyman_min_baseline",
+                    "practical_significance_threshold",
+                    "lift_warning_threshold",
+                    "alpha",
+                ):
+                    if _k in _loaded and _loaded[_k] is not None:
+                        st.session_state[_k] = _loaded[_k]
+                st.success(
+                    f"Manifest loaded ({_loaded.get('experiment_id', 'unnamed')}). "
+                    f"Policy fields applied; drift will be flagged on the result."
+                )
+            except Exception as _e:
+                st.error(f"Could not parse manifest JSON: {_e}")
+                st.session_state.pop("uploaded_manifest", None)
+        elif (
+            "uploaded_manifest" in st.session_state
+            and st.button("Clear loaded manifest", key=f"clear_manifest_{key_suffix}")
+        ):
             st.session_state.pop("uploaded_manifest", None)
-    elif "uploaded_manifest" in st.session_state and st.button("Clear loaded manifest"):
-        st.session_state.pop("uploaded_manifest", None)
 
-    if "uploaded_manifest" in st.session_state:
-        _m = st.session_state["uploaded_manifest"]
-        st.info(
-            f"📌 Active manifest: **{_m.get('experiment_id', 'unnamed')}** · "
-            f"primary={_m.get('primary_metric','?')} · α={_m.get('alpha','?')} · "
-            f"planned N={_m.get('planned_n_total','?')} · "
-            f"toolkit v{_m.get('toolkit_version','?')}"
-        )
+        if "uploaded_manifest" in st.session_state:
+            _m = st.session_state["uploaded_manifest"]
+            st.info(
+                f"📌 Active manifest: **{_m.get('experiment_id', 'unnamed')}** · "
+                f"primary={_m.get('primary_metric','?')} · α={_m.get('alpha','?')} · "
+                f"planned N={_m.get('planned_n_total','?')} · "
+                f"toolkit v{_m.get('toolkit_version','?')}"
+            )
 
-    col_lt, col_swm = st.columns(2)
-    with col_lt:
-        _lt = st.number_input(
-            "Expected-loss tolerance (Bayesian, absolute units)",
-            min_value=0.0, value=float(st.session_state.get("loss_tolerance", 0.0) or 0.0),
-            step=0.0005, format="%.5f",
-            help="A 'Ship' is downgraded to Inconclusive when Bayesian expected loss exceeds this. "
-                 "Leave 0 to disable.",
+    with st.expander("🎛️ Decision engine policy (optional)"):
+        st.caption(
+            "Tighten or relax the recommendation engine. Defaults match the documented "
+            "decision matrices; change these only with stakeholder alignment (ideally "
+            "captured in the manifest above)."
         )
-        st.session_state["loss_tolerance"] = _lt
-    with col_swm:
-        _swm = st.checkbox(
-            "Allow 'Ship with Monitoring' (intermediate state)",
-            value=st.session_state.get("allow_ship_with_monitoring", False),
-            help="When the frequentist test is inconclusive but Bayesian P(B>A) is above the "
-                 "monitoring threshold and expected loss is small, recommend shipping behind a "
-                 "small holdback rather than running longer.",
-        )
-        st.session_state["allow_ship_with_monitoring"] = _swm
-        _mpt = st.slider(
-            "Monitoring P(B>A) threshold",
-            min_value=0.70, max_value=0.94,
-            value=float(st.session_state.get("monitoring_prob_threshold", 0.85)),
-            step=0.01, disabled=not _swm,
-        )
-        st.session_state["monitoring_prob_threshold"] = _mpt
+        col_lt, col_swm = st.columns(2)
+        with col_lt:
+            _lt = st.number_input(
+                "Expected-loss tolerance (Bayesian, absolute units)",
+                min_value=0.0, value=float(st.session_state.get("loss_tolerance", 0.0) or 0.0),
+                step=0.0005, format="%.5f",
+                key=f"loss_tolerance_{key_suffix}",
+                help="A 'Ship' is downgraded to Inconclusive when Bayesian expected loss exceeds this. "
+                     "Leave 0 to disable.",
+            )
+            st.session_state["loss_tolerance"] = _lt
+        with col_swm:
+            _swm = st.checkbox(
+                "Allow 'Ship with Monitoring' (intermediate state)",
+                value=st.session_state.get("allow_ship_with_monitoring", False),
+                key=f"allow_swm_{key_suffix}",
+                help="When the frequentist test is inconclusive but Bayesian P(B>A) is above the "
+                     "monitoring threshold and expected loss is small, recommend shipping behind a "
+                     "small holdback rather than running longer.",
+            )
+            st.session_state["allow_ship_with_monitoring"] = _swm
+            _mpt = st.slider(
+                "Monitoring P(B>A) threshold",
+                min_value=0.70, max_value=0.94,
+                value=float(st.session_state.get("monitoring_prob_threshold", 0.85)),
+                step=0.01, disabled=not _swm,
+                key=f"mpt_{key_suffix}",
+            )
+            st.session_state["monitoring_prob_threshold"] = _mpt
+
 
 # ── Data ingestion ──────────────────────────────────────────────────────────
 if input_mode == "Upload CSV":
     # Clear manual state to prevent stale results from overriding CSV analysis
     st.session_state.pop("_manual_proportion", None)
     st.session_state.pop("_manual_continuous", None)
-    info_callout(
-        "Your CSV should have a **group** column (with values `control` and `treatment`) "
-        "and a **value** column (0/1 for conversion data, or continuous for revenue/time metrics). "
-        "Optional columns: **segment** (e.g., mobile/desktop), **covariate** (pre-experiment metric value for CUPED — must be measured BEFORE the experiment started), "
-        "and **day** (integer day number from experiment start, for novelty effect detection).",
-        callout_type="info",
-    )
-    with st.expander("💡 What is a novelty effect and how is it detected?"):
+    with st.expander("📄 Expected CSV format"):
         st.markdown(
-            "A **novelty effect** occurs when users react to a change simply because it's new, "
-            "inflating early results that fade over time.\n\n"
-            "**How to detect it:** Include a `day` column in your CSV (integer day number from "
-            "experiment start). The toolkit will automatically:\n\n"
-            "1. Compare the treatment effect in the first ~20% of days vs. the later period\n"
-            "2. Heuristically flag a warning if the early lift is at least 2× the stabilized effect\n\n"
-            "**This is a heuristic, not a statistical test.** It can produce false positives "
-            "(especially with low daily traffic) and false negatives. Treat the flag as a prompt "
-            "to investigate, not a verdict.\n\n"
-            "**If novelty is detected**, consider re-running the analysis after excluding the "
-            "first 3–7 days (burn-in period) to see the longer-term effect. "
-            "The Case Study notebook demonstrates this workflow end-to-end."
+            "**Required**: `group` (`control` / `treatment`), `value` (0/1 for proportions, numeric otherwise).  \n"
+            "**Optional**: `segment` (e.g. mobile/desktop), `covariate` (pre-experiment value for CUPED), "
+            "`day` (integer day number from experiment start — enables novelty-effect detection)."
         )
-    info_callout(
-        "🔒 **Privacy notice**: this is a personal/educational toolkit, not a hosted enterprise "
-        "service. Do not upload PII (names, emails, IPs, raw account IDs) or data subject to "
-        "contractual or regulatory restrictions. Use de-identified samples or hashed unit IDs. "
-        "Files are read into your Streamlit session's memory only; the toolkit does not write "
-        "uploads to disk, but you are responsible for ensuring your environment (browser, "
-        "Streamlit Cloud, logs) is acceptable for the data you choose to upload.",
-        "info",
-    )
+    _render_preregistration_block(key_suffix="csv")
+    st.markdown("---")
     uploaded = st.file_uploader("Upload experiment CSV", type=["csv"])
     if uploaded is not None:
         try:
@@ -311,47 +344,12 @@ if input_mode == "Upload CSV":
             has_covariate = "covariate" in df.columns
             has_segment = "segment" in df.columns
 
-            # Unit-of-analysis duplicate detection
-            if "unit_id" in df.columns:
-                _dups = df["unit_id"].duplicated().sum()
-                if _dups > 0:
-                    st.warning(
-                        f"⚠️ **Unit-of-analysis violation risk**: {_dups:,} duplicate `unit_id` "
-                        f"values found ({_dups / len(df):.1%} of rows). Most A/B tests assume "
-                        f"one row per user — duplicates inflate effective N and shrink CIs. "
-                        f"Aggregate to one row per unit (sum/mean as appropriate) before analysis."
-                    )
-
-            st.success(
-                f"Loaded **{len(df):,}** rows — detected metric type: **{metric_type.value}**"
-            )
-            if is_proportion:
-                st.caption("📊 Metric detected as **proportion** (binary 0/1 values) → Z-test will be used. "
-                           "If your data is continuous, ensure the `value` column contains non-binary values.")
-            else:
-                st.caption("📊 Metric detected as **continuous** (numeric values) → Welch's t-test will be used. "
-                           "If your data is binary (0/1), check for unexpected values in the `value` column.")
-                # Warn about heavy-tailed data (rewritten in plain English)
-                from scipy.stats import kurtosis as _kurtosis
-                _kurt = _kurtosis(df["value"].dropna(), fisher=True)
-                if _kurt > 10:
-                    st.warning(
-                        f"⚠️ **A few extreme values are dominating this metric** "
-                        f"(excess kurtosis = {_kurt:.1f}; values above ~3 indicate heavy tails). "
-                        f"That means a small number of outlier observations carry most of the "
-                        f"variance, which makes the test sensitive to chance and the CI wide. "
-                        f"Consider winsorizing the metric at the 99th percentile or analysing on "
-                        f"a log scale before drawing conclusions."
-                    )
+            st.caption(f"Loaded {len(df):,} rows · metric type: **{metric_type.value}** "
+                       f"({'Z-test' if is_proportion else 'Welch t-test'})")
         except Exception as exc:
             display_error(str(exc))
 else:
     section_header("Enter Summary Statistics", "Enter your experiment data", "✏️")
-    info_callout(
-        "**Control** = the original experience (Group A, no change).  \n"
-        "**Treatment** = the new variation being tested (Group B, the change you're evaluating).",
-        callout_type="info",
-    )
 
     manual_metric = st.radio(
         "Metric type",
@@ -393,7 +391,19 @@ else:
     )
     _manual_expected_ratio = (manual_alloc_pct / 100, 1 - manual_alloc_pct / 100)
 
-    if st.button("🚀 Run Analysis", use_container_width=True):
+    st.markdown("---")
+    _render_preregistration_block(key_suffix="manual")
+    st.markdown("")
+
+    if st.button(
+        "🚀 Run Analysis",
+        use_container_width=True,
+        help=(
+            "Summary-stats mode skips novelty and Simpson's Paradox checks — both need "
+            "day- and segment-level data. Verify these upstream before aggregating "
+            "(see the interview guide's 'Pre-Aggregation Checks' section)."
+        ),
+    ):
         if manual_is_proportion:
             # Validate counts don't exceed totals
             if control_count > control_total:
@@ -433,7 +443,7 @@ if _manual_prop is not None or _manual_cont is not None:
         _control_rate = _cc / _ct
 
         # Progress tracker
-        step_names = ["SRM Check", "Frequentist", "Bayesian", "Recommendation"]
+        step_names = ["Diagnostics", "Frequentist", "Bayesian", "Recommendation"]
         steps_html = "".join(
             f'<span style="background:#0066FF;color:#fff;border-radius:50%;width:24px;height:24px;'
             f'display:inline-flex;align-items:center;justify-content:center;font-size:0.7rem;'
@@ -448,13 +458,9 @@ if _manual_prop is not None or _manual_cont is not None:
             unsafe_allow_html=True,
         )
 
-        # SRM
-        section_header("Sample Ratio Mismatch (SRM)", "Step 1 — Verify traffic was split correctly", "1️⃣")
+        # SRM diagnostic
         srm_result = check_srm(observed=(_ct, _tt), expected_ratio=_manual_expected_ratio)
-        if srm_result.has_mismatch:
-            info_callout(f"SRM detected — χ² = {srm_result.chi2_statistic:.2f}, p = {srm_result.p_value:.4f}.", "warning")
-        else:
-            info_callout(f"No SRM — χ² = {srm_result.chi2_statistic:.2f}, p = {srm_result.p_value:.4f}. Traffic split looks clean.", "success")
+        render_diagnostics_card([_srm_check_to_dict(srm_result)])
 
         # Frequentist
         section_header("Frequentist Analysis", "Step 2 — Hypothesis test", "2️⃣")
@@ -474,7 +480,7 @@ if _manual_prop is not None or _manual_cont is not None:
         _tm, _ts, _tn = _manual_cont["treatment_mean"], _manual_cont["treatment_std"], _manual_cont["treatment_n"]
         _control_rate = _cm
 
-        step_names = ["SRM Check", "Frequentist", "Bayesian", "Recommendation"]
+        step_names = ["Diagnostics", "Frequentist", "Bayesian", "Recommendation"]
         steps_html = "".join(
             f'<span style="background:#0066FF;color:#fff;border-radius:50%;width:24px;height:24px;'
             f'display:inline-flex;align-items:center;justify-content:center;font-size:0.7rem;'
@@ -489,13 +495,9 @@ if _manual_prop is not None or _manual_cont is not None:
             unsafe_allow_html=True,
         )
 
-        # SRM
-        section_header("Sample Ratio Mismatch (SRM)", "Step 1 — Verify traffic was split correctly", "1️⃣")
+        # SRM diagnostic
         srm_result = check_srm(observed=(_cn, _tn), expected_ratio=_manual_expected_ratio)
-        if srm_result.has_mismatch:
-            info_callout(f"SRM detected — χ² = {srm_result.chi2_statistic:.2f}, p = {srm_result.p_value:.4f}.", "warning")
-        else:
-            info_callout(f"No SRM — χ² = {srm_result.chi2_statistic:.2f}, p = {srm_result.p_value:.4f}. Traffic split looks clean.", "success")
+        render_diagnostics_card([_srm_check_to_dict(srm_result)])
 
         # Frequentist
         section_header("Frequentist Analysis", "Step 2 — Hypothesis test", "2️⃣")
@@ -558,82 +560,150 @@ elif df is not None:
     control = df.loc[df["group"] == "control", "value"].to_numpy()
     treatment = df.loc[df["group"] == "treatment", "value"].to_numpy()
 
-    # Pipeline progress tracker
-    total_steps = 4 + (1 if "covariate" in df.columns else 0) + (1 if "segment" in df.columns else 0)
-    step_names = ["SRM Check", "Frequentist", "Bayesian"]
-    if "covariate" in df.columns:
-        step_names.append("CUPED")
-    if "segment" in df.columns:
-        step_names.append("Segments")
-    step_names.append("Recommendation")
-
-    steps_html = "".join(
-        f'<span style="background:#0066FF;color:#fff;border-radius:50%;width:24px;height:24px;'
-        f'display:inline-flex;align-items:center;justify-content:center;font-size:0.7rem;'
-        f'font-weight:700;margin-right:0.3rem;">{i+1}</span>'
-        f'<span style="margin-right:1rem;font-size:0.85rem;color:#555;">{name}</span>'
-        for i, name in enumerate(step_names)
-    )
-    st.markdown(
-        f'<div style="background:#f8f9fb;border:1px solid #e2e6ed;border-radius:10px;'
-        f'padding:0.8rem 1.2rem;margin:1rem 0;display:flex;align-items:center;flex-wrap:wrap;">'
-        f'{steps_html}</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown("")
-
-    # 1. SRM check
-    section_header("Sample Ratio Mismatch (SRM)", "Step 1 — Verify traffic was split correctly", "1️⃣")
-    srm_ratio_input = st.slider(
-        "Planned allocation (% to control)",
-        min_value=10,
-        max_value=90,
-        value=50,
-        step=5,
-        help="The intended traffic split. 50 = equal 50/50 split. 80 = 80% control / 20% treatment.",
-    )
+    # ── Compute all diagnostics up front, render unified card ──────────────
+    with st.expander("⚙️ Allocation settings", expanded=False):
+        srm_ratio_input = st.slider(
+            "Planned allocation (% to control)",
+            min_value=10, max_value=90, value=50, step=5,
+            help="The intended traffic split. 50 = equal 50/50. 80 = 80% control / 20% treatment.",
+        )
     srm_expected = (srm_ratio_input / 100, 1 - srm_ratio_input / 100)
-    srm_result = check_srm(observed=(len(control), len(treatment)), expected_ratio=srm_expected)
-    if srm_result.has_mismatch:
-        info_callout(
-            f"SRM detected — χ² = {srm_result.chi2_statistic:.2f}, "
-            f"p = {srm_result.p_value:.4f}. Interpret results with caution.",
-            "warning",
-        )
-    else:
-        info_callout(
-            f"No SRM — χ² = {srm_result.chi2_statistic:.2f}, "
-            f"p = {srm_result.p_value:.4f}. Traffic split looks clean.",
-            "success",
-        )
 
-    # 1b. Stratified SRM (per-day) — surfaces day-level bucketing bugs that the
-    # aggregate test misses (Holm-corrected across days).
+    # Run all checks
+    srm_result = check_srm(observed=(len(control), len(treatment)), expected_ratio=srm_expected)
+    seg_result = segment_analysis(df) if has_segment else None
+    novelty_result = check_novelty(df) if "day" in df.columns else None
+
+    stratum_srm = None
     if "day" in df.columns:
         try:
             stratum_srm = check_srm_by_stratum(
                 df, group_col="group", stratum_col="day",
                 expected_ratio=srm_expected, threshold=0.01,
             )
-            if stratum_srm.n_strata > 1:
-                with st.expander(
-                    f"📅 Stratified SRM by day "
-                    f"({stratum_srm.n_mismatches}/{stratum_srm.n_strata} days flagged after Holm correction)"
-                ):
-                    if stratum_srm.warning:
-                        info_callout(stratum_srm.warning, "warning")
-                    else:
-                        info_callout(
-                            "All daily strata are within the planned allocation after Holm correction.",
-                            "success",
-                        )
-                    if stratum_srm.stratum_results:
-                        _strat_df = pd.DataFrame(stratum_srm.stratum_results)[
-                            ["stratum", "n_control", "n_treatment", "p_value", "p_value_adjusted", "has_mismatch"]
-                        ]
-                        st.dataframe(_strat_df, hide_index=True, use_container_width=True)
-        except Exception as _e:
-            st.caption(f"Stratified SRM skipped: {_e}")
+        except Exception:
+            stratum_srm = None
+
+    _dup_count = int(df["unit_id"].duplicated().sum()) if "unit_id" in df.columns else 0
+    _kurt = None
+    if not is_proportion:
+        from scipy.stats import kurtosis as _kurtosis
+        _kurt = float(_kurtosis(df["value"].dropna(), fisher=True))
+
+    # Build the diagnostics list
+    diagnostics: list[dict] = []
+
+    if "unit_id" in df.columns:
+        diagnostics.append({
+            "name": "Unit-of-analysis (one row per user)",
+            "status": "pass" if _dup_count == 0 else "fail",
+            "summary": (
+                f"{_dup_count:,} duplicate unit_ids ({_dup_count / len(df):.1%})"
+                if _dup_count > 0 else "no duplicates"
+            ),
+            "detail": (
+                "Most A/B tests assume one row per user. Duplicates inflate effective N and "
+                "shrink CIs. Aggregate to one row per unit (sum/mean as appropriate) before "
+                "analysing."
+            ) if _dup_count > 0 else None,
+        })
+
+    # SRM (aggregate)
+    diagnostics.append(_srm_check_to_dict(srm_result))
+
+    # Per-day SRM
+    if stratum_srm is not None and stratum_srm.n_strata > 1:
+        if stratum_srm.warning:
+            diagnostics.append({
+                "name": "Per-day traffic split",
+                "status": "fail",
+                "summary": (
+                    f"{stratum_srm.n_mismatches}/{stratum_srm.n_strata} days flagged "
+                    f"(Holm-corrected)"
+                ),
+                "detail": (
+                    f"{stratum_srm.warning} Time-correlated SRM usually indicates a deploy, "
+                    f"CDN switch, or filter rule that fired on certain days. The aggregate "
+                    f"check can pass while this one fails."
+                ),
+            })
+        else:
+            diagnostics.append({
+                "name": "Per-day traffic split",
+                "status": "pass",
+                "summary": f"{stratum_srm.n_strata} days, all clean (Holm)",
+            })
+
+    # Simpson's
+    if seg_result is not None:
+        if seg_result.simpsons_paradox:
+            diagnostics.append({
+                "name": "Simpson's Paradox",
+                "status": "fail",
+                "summary": "aggregate contradicts segments",
+                "detail": (
+                    f"{seg_result.simpsons_details} The headline result is misleading due to a "
+                    f"composition effect across segments. Trust the within-segment effects."
+                ),
+            })
+        else:
+            diagnostics.append({
+                "name": "Simpson's Paradox",
+                "status": "pass",
+                "summary": "segments consistent",
+            })
+
+    # Novelty
+    if novelty_result is not None and novelty_result.details != "No day column — novelty check skipped." \
+            and novelty_result.details != "Fewer than 3 days of data — novelty check skipped.":
+        if novelty_result.has_novelty:
+            diagnostics.append({
+                "name": "Novelty effect",
+                "status": "warn",
+                "summary": f"early/late = {novelty_result.ratio:.2f}×",
+                "detail": (
+                    f"{novelty_result.details} Heuristic flag, not a statistical test — can "
+                    f"produce false positives at low daily traffic. If real, re-analyse with "
+                    f"the first 3–7 days excluded as a burn-in period."
+                ),
+            })
+        else:
+            diagnostics.append({
+                "name": "Novelty effect",
+                "status": "pass",
+                "summary": f"early/late = {novelty_result.ratio:.2f}× (under 2.0× threshold)",
+            })
+
+    # Heavy-tail
+    if _kurt is not None:
+        if _kurt > 10:
+            diagnostics.append({
+                "name": "Heavy-tail metric",
+                "status": "warn",
+                "summary": f"excess kurtosis = {_kurt:.1f}",
+                "detail": (
+                    "A few extreme values dominate this metric — small number of outliers "
+                    "carry most of the variance, making the test sensitive to chance and the "
+                    "CI wide. Consider winsorising at the 99th percentile or analysing on a "
+                    "log scale."
+                ),
+            })
+        else:
+            diagnostics.append({
+                "name": "Heavy-tail metric",
+                "status": "pass",
+                "summary": f"excess kurtosis = {_kurt:.2f}",
+            })
+
+    render_diagnostics_card(diagnostics)
+
+    # Optional per-day SRM details for power-users (collapsed, only when there are strata)
+    if stratum_srm is not None and stratum_srm.n_strata > 1 and stratum_srm.stratum_results:
+        with st.expander("📅 Per-day SRM details"):
+            _strat_df = pd.DataFrame(stratum_srm.stratum_results)[
+                ["stratum", "n_control", "n_treatment", "p_value", "p_value_adjusted", "has_mismatch"]
+            ]
+            st.dataframe(_strat_df, hide_index=True, use_container_width=True)
 
     # 2. Frequentist test
     section_header("Frequentist Analysis", "Step 2 — Hypothesis test with p-value and confidence interval", "2️⃣")
@@ -735,8 +805,7 @@ elif df is not None:
             {"icon": "✨", "label": "CUPED-Adjusted Estimate", "value": f"{cuped_result.adjusted_estimate:.4f}"},
         ])
 
-    # 5. Segmentation (optional)
-    seg_result = None
+    # 5. Segmentation (optional) — seg_result already computed up front for the Diagnostics card
     if has_segment:
         step_num = "5️⃣" if has_covariate else "4️⃣"
         section_header("Segment Analysis", f"Step {'5' if has_covariate else '4'} — Heterogeneous treatment effects (exploratory)", step_num)
@@ -748,9 +817,7 @@ elif df is not None:
             "follow-up tests, not as launch decisions.",
             "info",
         )
-        seg_result = segment_analysis(df)
-        if seg_result.simpsons_paradox:
-            info_callout(f"Simpson's Paradox detected — {seg_result.simpsons_details}", "warning")
+        # seg_result already computed up front for the Diagnostics card
         for seg in seg_result.segment_results:
             raw_p = seg["p_value"]
             adj_p = seg.get("p_value_adjusted", raw_p)
@@ -771,12 +838,7 @@ elif df is not None:
     st.markdown("")
     section_header("Recommendation", "Final verdict based on all evidence", "🏁")
 
-    novelty_result = None
-    if "day" in df.columns:
-        novelty_result = check_novelty(df)
-        if novelty_result.has_novelty:
-            info_callout(novelty_result.details, "warning")
-
+    # novelty_result already computed up front for the Diagnostics card.
     # Compute control rate for Twyman relative lift check
     _csv_control_rate = float(control.mean())
 
