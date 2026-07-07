@@ -1,11 +1,11 @@
 # 🧪 AB Test Toolkit
 
 [![Live App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://ab-test-toolkit.streamlit.app/)
-[![Tests](https://img.shields.io/badge/tests-234%20passing-brightgreen)](./tests)
+[![Tests](https://img.shields.io/badge/tests-256%20passing-brightgreen)](./tests)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](./pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](./pyproject.toml)
 
-A production-grade Python toolkit and interactive app for designing, analyzing, and making decisions on A/B experiments.
+A rigorously tested Python toolkit and interactive app for designing, analyzing, and making decisions on A/B experiments — built with production-style engineering discipline (typed results, input validation, 250+ tests). It is a fixed-horizon, single-metric analyzer, not a substitute for a full experimentation platform.
 
 **🚀 Try it live → [ab-test-toolkit.streamlit.app](https://ab-test-toolkit.streamlit.app/)**
 
@@ -59,7 +59,7 @@ Full analysis pipeline in 5 steps, with optional **pre-registration verification
 
 Post-experiment check: "given my sample size, what's the smallest effect I could have detected at 80% power?" Avoids the [post-hoc power fallacy](https://en.wikipedia.org/wiki/Post_hoc_analysis) by solving for MDE instead of observed power.
 
-**Why 80% power?** Power = 1 − β, the probability of correctly detecting a real effect when one exists. 80% (β = 0.20) is the long-standing industry default popularized by Cohen (1988) — a pragmatic balance between two costs: lower power means more false negatives (missing real wins); higher power (e.g., 90–95%) requires substantially more sample size (~30% more for 90%, ~67% more for 95%). For high-stakes decisions (medical, payments, irreversible launches) you may want 90%+; for cheap, reversible product changes 80% is the standard floor.
+**Why 80% power?** Power = 1 − β, the probability of correctly detecting a real effect when one exists. 80% (β = 0.20) is the long-standing industry default popularized by Cohen (1988) — a pragmatic balance between two costs: lower power means more false negatives (missing real wins); higher power (e.g., 90–95%) requires substantially more sample size (~34% more for 90%, ~66% more for 95%). For high-stakes decisions (medical, payments, irreversible launches) you may want 90%+; for cheap, reversible product changes 80% is the standard floor.
 
 ### 📚 Page 4: Case Study Demo
 
@@ -84,7 +84,9 @@ The recommendation engine synthesizes all evidence and flags problems automatica
 |-----------|-------------------|-------------------|
 | **Sample Ratio Mismatch** | χ² test on observed vs expected traffic split (aggregate + per-day stratified with Holm correction) | Blocks decision → Inconclusive (randomization broken) |
 | **Manifest Drift** | Compares registered pre-reg manifest against as-run α, loss tolerance, monitoring policy, and planned N | Flags drift on the recommendation card; recommendation reflects as-run settings (treat as exploratory unless drift is justified) |
-| **Simpson's Paradox** | At least one segment that *opposes* the aggregate effect-sign and represents ≥20% of the valid sample is significant under Holm-adjusted p-values | Blocks decision → Inconclusive (composition effect is real) |
+| **Segment Sign Reversal (Simpson's check)** | At least one segment that *opposes* the aggregate effect-sign, exceeds a scale-aware noise floor (1% of the aggregate effect), represents ≥20% of the valid sample, and is significant under Holm-adjusted p-values | Blocks decision → Inconclusive (aggregate is misleading) |
+| **Segment-Mix Imbalance** | Chi-square test of independence on the group × segment table (p < 0.001) — the structural setup for a *true* Simpson's paradox | Flagged; combined with a sign reversal it distinguishes composition effects from genuine HTE |
+| **Interim / Planned-N Shortfall** | Observed N below the manifest's registered `planned_n_total` | Withholds Ship-class decisions → Inconclusive (interim/exploratory); No-Ship harm signals still surface |
 | **Twyman's Law** | \|effect size\| ≥ 1.0 or relative lift ≥ 50% | Downgrades Ship → Inconclusive (suspiciously large) |
 | **Novelty Effect** | Early treatment effect > 2× late effect | Warning + suggests burn-in re-analysis |
 | **Heavy-Tailed Data** | Kurtosis > 10 | Suggests P99 winsorization before analysis |
@@ -99,7 +101,9 @@ Pre-registration is the single highest-leverage habit for credible experimentati
 1. **Export a versioned manifest** from the Experiment Design page before the test runs. The JSON snapshot includes the toolkit version, hypothesis, primary metric, MDE/power/α, planned sample size, the fixed decision rule, every structured policy knob, and Bayesian seed parameters.
 2. **Upload the manifest** on the Analyze page when reading results to verify the as-run analysis matches the registered plan.
 
-> **Note on the decision rule:** the toolkit hard-codes a dual-evidence rule (frequentist p < α **and** Bayesian P(B>A) ≥ 95% **and** no SRM **and** no significant Simpson reversal **and** not Twyman-flagged). This is intentionally stricter than industry default — most teams pick **one** school per experiment (see the per-school decision matrices below). The dual-evidence default in this toolkit is a teaching device that forces you to inspect both lenses and surfaces conflicts.
+> **Note on the decision rule:** the toolkit's Ship gate is frequentist (p < α with a positive effect, no SRM, no significant segment sign reversal, not Twyman-flagged); the Bayesian layer supplies the **risk metrics** — expected loss vs `loss_tolerance`, the likely-harmful (P(B>A) < 5%) No-Ship branch, and the 85–95% Ship-with-Monitoring zone. The engine also cross-checks Bayesian P(B>A) ≥ 95% alongside significance, but with the default uninformative priors that condition is *implied* by frequentist significance at realistic sample sizes — it is a teaching device that forces you to inspect both lenses, not an independent second witness. Most teams pick **one** school per experiment (see the per-school decision matrices below).
+>
+> **Planned-N enforcement:** when a manifest with `planned_n_total` is supplied and the observed N falls short of it, the engine marks the analysis **interim**, withholds Ship-class recommendations, and directs you to complete the registered plan. No-Ship harm signals are never withheld — safety information surfaces immediately.
 
 
 ### When to Use Which Framework
@@ -139,7 +143,7 @@ Most teams commit to one framework pre-experiment. The toolkit reports both, but
 
 #### Cross-Framework Sanity Check (this toolkit's default)
 
-For demonstration, this toolkit's recommendation engine runs **both** frameworks in parallel and treats agreement as a confidence boost and disagreement as a flag to investigate. This is a deliberate portfolio design choice — **not** industry standard. Most production systems pre-commit to one framework. The dual requirement here is more conservative (fewer false Ships) and surfaces borderline results sensitive to priors or noise.
+For demonstration, this toolkit's recommendation engine runs **both** frameworks in parallel and treats agreement as a confidence boost and disagreement as a flag to investigate. This is a deliberate portfolio design choice — **not** industry standard. Most production systems pre-commit to one framework. Note that with uninformative priors the P(B>A) ≥ 95% condition is implied by frequentist significance (two-sided p < 0.05 ⇒ P(B>A) ≳ 97.5%), so genuine disagreement is rare at production sample sizes; the binding Bayesian elements are the expected-loss tolerance, the harm branch, and the monitoring zone.
 
 | Frequentist | Bayesian P(B>A) | Effect | Decision | Signal Strength |
 |------------|----------------|--------|----------|----------|
@@ -158,6 +162,8 @@ Every recommendation includes **context-aware next steps** and **supporting metr
 ### Scale and operational caveats
 
 - **Single-metric framing.** The recommendation engine evaluates one primary metric. Real launches typically track several guardrails; if you act on multiple metrics simultaneously, apply Bonferroni / Holm or use a hierarchical decision rule. The segmentation module does Holm-correct *within* a segment family — it does not correct across metrics.
+- **Metric directionality.** The engine defaults to higher-is-better. For metrics where a decrease is the win (latency, error rate, churn), pass `higher_is_better=False` to `generate_recommendation` — results are then evaluated and reported in "improvement space" (positive = metric decreased). The novelty heuristic (`check_novelty`) operates on raw values and assumes higher-is-better.
+- **Credible-interval width.** The Bayesian functions accept `credible_level` (default 0.95) so the reported credible interval can match a 90%/99% policy; the P(B>A) decision thresholds are separate policy knobs and do not move with the frequentist α.
 - **Stationarity assumption.** Power and decision logic assume the experiment runs to its planned horizon. For sequential / always-valid analyses, plug into a sequential testing framework (group-sequential, AGRAPA, mSPRT) — not this toolkit.
 - **No interference / spillover handling.** All tests assume the Stable Unit Treatment Value Assumption (SUTVA). Two-sided marketplaces, social-graph products, ad auctions, and inventory-shared experiences violate SUTVA and require cluster randomization or budget-split designs.
 - **A/A pre-flight.** Run an A/A test before any new logging pipeline goes live. The toolkit does not auto-gate on A/A signal; it is the experimenter's responsibility.
@@ -177,12 +183,13 @@ This toolkit is a deliberately bounded artifact: a **fixed-horizon, single-exper
 
 ### Next steps (would build with more time, in priority order)
 
-1. **Manifest schema v3.** Extend the pre-registration manifest with `metric_families` (declared primary / secondary / guardrail panel), `correction_policy` (Holm / BH / none), `interim_analysis_allowed` (bool, gates early-stop behavior), and `kurtosis_estimate` (informs power inflation). Foundation for items 2–4.
-2. **Delta-method ratio analyzer + ratio-shape detection.** Biggest correctness risk. Add a `ratio_metric_test` with delta-method variance plus a bootstrap fallback. Detect when input has multiple rows per user and refuse to run Welch with a clear error pointing the user to the ratio analyzer.
-3. **Planned-N gate on the recommendation card.** If `n_observed < n_planned` from the manifest, downgrade output to "interim / exploratory" and refuse to emit a Ship recommendation. One-day fix; turns the documented "no peeking" disclaimer into an enforced guardrail.
-4. **Cross-family correction in the recommendation engine.** Apply Holm (or BH if pre-registered) across the declared primary+secondary panel. Guardrails remain one-sided non-inferiority checks, not co-primary tests. Small once the manifest field from item 1 exists.
-5. **Historical variance estimator with stability warning.** A helper that ingests N days of historical metric data, returns σ̂ with a stability CI, and warns when N_days is too small or variance is non-stationary. Closes a gap in the power calculator's input contract.
-6. **Kurtosis warning + bootstrap power path.** Power calculator emits a warning when excess kurtosis > 5, and offers a Monte-Carlo bootstrap power simulation as the rigorous alternative to the closed-form formula. Diagnostic, not silent inflation.
+1. **Manifest schema v3.** Extend the pre-registration manifest with `metric_families` (declared primary / secondary / guardrail panel), `correction_policy` (Holm / BH / none), `interim_analysis_allowed` (bool, gates early-stop behavior), and `kurtosis_estimate` (informs power inflation). Foundation for items 2–3.
+2. **Delta-method ratio analyzer.** Biggest correctness risk. Add a `ratio_metric_test` with delta-method variance plus a bootstrap fallback. (The cheap guard already ships: an optional `user_id` CSV column is rejected on duplicates, so multi-row-per-user input can no longer silently reach the Welch/z tests.)
+3. **Cross-family correction in the recommendation engine.** Apply Holm (or BH if pre-registered) across the declared primary+secondary panel. Guardrails remain one-sided non-inferiority checks, not co-primary tests. Small once the manifest field from item 1 exists.
+4. **Historical variance estimator with stability warning.** A helper that ingests N days of historical metric data, returns σ̂ with a stability CI, and warns when N_days is too small or variance is non-stationary. Closes a gap in the power calculator's input contract.
+5. **Kurtosis warning + bootstrap power path.** Power calculator emits a warning when excess kurtosis > 5, and offers a Monte-Carlo bootstrap power simulation as the rigorous alternative to the closed-form formula. Diagnostic, not silent inflation.
+
+> **Shipped from this list:** the planned-N gate (formerly item 3) is now enforced by the recommendation engine — analyses with `n_observed < planned_n_total` are marked interim and cannot emit Ship.
 
 ### Status
 
@@ -253,7 +260,8 @@ Upload a CSV with these columns:
 | Column | Required | Description |
 |--------|----------|-------------|
 | `group` | ✅ | `"control"` or `"treatment"` (case-insensitive) |
-| `value` | ✅ | Metric value (0/1 for proportions, numeric for continuous) |
+| `value` | ✅ | Metric value (0/1 for proportions, numeric for continuous) — **one row per randomization unit (user)** |
+| `user_id` | Optional | Randomization-unit id — when present, duplicates are **rejected** (multiple rows per user violate the independence assumption of the z/Welch tests; aggregate to user level first) |
 | `segment` | Optional | Segment label (e.g., `"mobile"`, `"US"`) — enables HTE analysis |
 | `covariate` | Optional | Pre-experiment metric — enables CUPED variance reduction |
 | `day` | Optional | Day index (1, 2, …) — enables novelty detection & temporal charts |
@@ -263,6 +271,7 @@ Upload a CSV with these columns:
 - `covariate`, when present, must also be **finite** (no NaN, no `Inf`, no `-Inf`) — non-finite values silently propagate through CUPED's regression and produce broken CIs, so they fail fast instead.
 - `day`, when present, is **coerced to numeric**; non-numeric values like `"Mon"` or `"week 1"` are rejected. This prevents the lexicographic-sort trap (`"1", "10", "2"` → wrong novelty windows).
 - `group` values are normalized to lowercase; anything outside `{control, treatment}` is rejected.
+- `user_id`, when present, must be unique — duplicate ids indicate user-day/session rows, which silently understate variance under the per-user tests. The loader fails fast with guidance to aggregate first.
 
 ### Pre-Registration Manifest Schema
 
@@ -342,9 +351,9 @@ app/                     # Streamlit interactive app
 notebooks/
 └── case_study.ipynb     # End-to-end Jupyter walkthrough
 
-tests/                   # 234 tests (unit + integration)
+tests/                   # 256 tests (unit + integration)
 ├── conftest.py          # Shared fixtures
-├── unit/                # Per-module tests, including round-3 P1 fix coverage
+├── unit/                # Per-module tests, including round-3/round-4 fix coverage
 └── integration/         # Pipeline, notebook & app tests
 ```
 

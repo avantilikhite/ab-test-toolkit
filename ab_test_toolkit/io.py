@@ -123,6 +123,21 @@ def load_experiment_data(
         if df["day"].isna().any():
             raise ValueError("Day column contains NaN/missing values.")
 
+    # --- Validate user_id column (if present) ---
+    # The statistical contract is one row per randomization unit.  Duplicate
+    # user_ids mean the rows are user-days/sessions: Welch/z on correlated
+    # rows silently understates variance and inflates false positives.
+    if "user_id" in df.columns:
+        n_dupes = int(df["user_id"].duplicated().sum())
+        if n_dupes > 0:
+            raise ValueError(
+                f"user_id column contains {n_dupes} duplicate id(s). The toolkit "
+                f"expects one row per randomization unit (user). Multiple rows per "
+                f"user (user-days, sessions) violate the independence assumption of "
+                f"the z/Welch tests — aggregate to one row per user first, or use a "
+                f"delta-method/bootstrap analyzer for ratio metrics."
+            )
+
     # --- Handle segment NaN ---
     if "segment" in df.columns:
         df["segment"] = df["segment"].fillna("unknown").astype(str)

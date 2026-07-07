@@ -140,8 +140,8 @@ st.markdown(
         <span style="font-size:3rem;">🧪</span>
         <h1 style="color:#fff;margin:0.5rem 0 0.3rem 0;font-size:2.2rem;">AB Test Toolkit</h1>
         <p style="color:#a0c4ff;font-size:1.1rem;margin:0;max-width:600px;display:inline-block;">
-            A production-grade tool for designing, auditing, and analyzing A/B experiments
-            with statistical rigor.
+            A rigorously tested toolkit for designing, auditing, and analyzing A/B experiments
+            — built with production-style engineering discipline.
         </p>
     </div>
     """,

@@ -42,6 +42,7 @@ def beta_binomial(
     prior_beta: float = 1.0,
     n_simulations: int = 100_000,
     random_state: int | None = 0,
+    credible_level: float = 0.95,
 ) -> BayesianResult:
     """Beta-Binomial conjugate analysis from raw binary arrays."""
     control = np.asarray(control)
@@ -64,6 +65,7 @@ def beta_binomial(
         prior_beta=prior_beta,
         n_simulations=n_simulations,
         random_state=random_state,
+        credible_level=credible_level,
     )
 
 
@@ -76,8 +78,13 @@ def beta_binomial_from_stats(
     prior_beta: float = 1.0,
     n_simulations: int = 100_000,
     random_state: int | None = 0,
+    credible_level: float = 0.95,
 ) -> BayesianResult:
-    """Beta-Binomial conjugate analysis from summary statistics."""
+    """Beta-Binomial conjugate analysis from summary statistics.
+
+    ``credible_level`` sets the width of the reported credible interval
+    (default 0.95 → the central 95% interval).
+    """
     if control_total <= 0 or treatment_total <= 0:
         raise ValueError("Totals must be positive integers.")
     if control_count < 0 or treatment_count < 0:
@@ -88,6 +95,8 @@ def beta_binomial_from_stats(
         raise ValueError("prior_alpha and prior_beta must be positive.")
     if n_simulations < 1000:
         raise ValueError("n_simulations must be at least 1000 for stable estimates.")
+    if not (0 < credible_level < 1):
+        raise ValueError("credible_level must be in (0, 1).")
 
     c_alpha = prior_alpha + control_count
     c_beta = prior_beta + control_total - control_count
@@ -103,7 +112,8 @@ def beta_binomial_from_stats(
     expected_loss = float(np.maximum(samples_a - samples_b, 0).mean())
 
     diff = samples_b - samples_a
-    ci = (float(np.percentile(diff, 2.5)), float(np.percentile(diff, 97.5)))
+    tail_pct = (1.0 - credible_level) / 2 * 100
+    ci = (float(np.percentile(diff, tail_pct)), float(np.percentile(diff, 100 - tail_pct)))
 
     return BayesianResult(
         model_type="beta_binomial",
@@ -112,7 +122,7 @@ def beta_binomial_from_stats(
         control_posterior={"alpha": float(c_alpha), "beta": float(c_beta)},
         treatment_posterior={"alpha": float(t_alpha), "beta": float(t_beta)},
         credible_interval=ci,
-        prior_config={"alpha": prior_alpha, "beta": prior_beta},
+        prior_config={"alpha": prior_alpha, "beta": prior_beta, "credible_level": credible_level},
     )
 
 
@@ -122,6 +132,7 @@ def normal_normal(
     prior_variance_multiplier: float = 100.0,
     n_simulations: int = 100_000,
     random_state: int | None = 0,
+    credible_level: float = 0.95,
 ) -> BayesianResult:
     """Bayesian analysis of two means with unknown variances (Student-t posterior)."""
     control = np.asarray(control, dtype=float)
@@ -141,6 +152,7 @@ def normal_normal(
         prior_variance_multiplier=prior_variance_multiplier,
         n_simulations=n_simulations,
         random_state=random_state,
+        credible_level=credible_level,
     )
 
 
@@ -154,6 +166,7 @@ def normal_normal_from_stats(
     prior_variance_multiplier: float = 100.0,
     n_simulations: int = 100_000,
     random_state: int | None = 0,
+    credible_level: float = 0.95,
 ) -> BayesianResult:
     """Bayesian analysis of two means with **unknown variances**.
 
@@ -187,6 +200,8 @@ def normal_normal_from_stats(
         raise ValueError("Standard deviations must be non-negative.")
     if n_simulations < 1000:
         raise ValueError("n_simulations must be at least 1000 for stable posterior estimates.")
+    if not (0 < credible_level < 1):
+        raise ValueError("credible_level must be in (0, 1).")
 
     x_bar_c, x_bar_t = control_mean, treatment_mean
     s_c, s_t = max(control_std, 1e-12), max(treatment_std, 1e-12)
@@ -214,7 +229,11 @@ def normal_normal_from_stats(
     diff_samples = samples_t - samples_c
     prob_b_gt_a = float((diff_samples > 0).mean())
     expected_loss = float(np.maximum(samples_c - samples_t, 0).mean())
-    ci = (float(np.percentile(diff_samples, 2.5)), float(np.percentile(diff_samples, 97.5)))
+    tail_pct = (1.0 - credible_level) / 2 * 100
+    ci = (
+        float(np.percentile(diff_samples, tail_pct)),
+        float(np.percentile(diff_samples, 100 - tail_pct)),
+    )
 
     warnings = []
     if n_c < 30 or n_t < 30:
@@ -234,6 +253,7 @@ def normal_normal_from_stats(
             "reference_prior": "p(mu, sigma^2) ∝ 1/sigma^2",
             "posterior": "Student-t marginal for each group's mean",
             "prior_variance_multiplier_ignored": prior_variance_multiplier,
+            "credible_level": credible_level,
             "warnings": warnings,
         },
     )

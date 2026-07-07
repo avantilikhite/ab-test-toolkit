@@ -206,7 +206,7 @@ def segment_comparison_chart(result: SegmentResult) -> go.Figure:
     )
     if result.simpsons_paradox:
         fig.add_annotation(
-            text="⚠️ Simpson's Paradox detected",
+            text="⚠️ Segment sign reversal detected (Simpson's check)",
             xref="paper", yref="paper", x=0.5, y=1.05,
             showarrow=False, font=dict(size=13, color="red"),
         )

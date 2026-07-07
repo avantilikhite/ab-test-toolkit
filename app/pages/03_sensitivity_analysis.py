@@ -65,7 +65,7 @@ with st.container():
 
             **Why 80%?** It's the industry-standard balance between detection
             sensitivity and sample cost. Higher power (e.g., 90%) requires
-            ~30% more sample, which means longer experiments and higher
+            ~34% more sample, which means longer experiments and higher
             opportunity cost.
             """
         )

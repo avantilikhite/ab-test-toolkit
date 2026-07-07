@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 import pandas as pd
@@ -127,6 +127,45 @@ def check_novelty(
     )
 
 
+def _flip_direction(
+    frequentist: FrequentistResult, bayesian: BayesianResult
+) -> tuple[FrequentistResult, BayesianResult]:
+    """Map results into "improvement space" for lower-is-better metrics.
+
+    Frequentist quantities flip sign (CI bounds swap and negate).  The
+    Bayesian win-probability becomes its complement, and the expected loss
+    is re-expressed for the flipped direction via the exact identity
+    ``E[max(B-A, 0)] = E[B-A] + E[max(A-B, 0)]`` (clamped at 0 against
+    Monte-Carlo noise), using the posterior means for ``E[B-A]``.
+    """
+    flipped_freq = replace(
+        frequentist,
+        statistic=-frequentist.statistic,
+        point_estimate=-frequentist.point_estimate,
+        ci_lower=-frequentist.ci_upper,
+        ci_upper=-frequentist.ci_lower,
+        effect_size=-frequentist.effect_size,
+    )
+    post_c, post_t = bayesian.control_posterior, bayesian.treatment_posterior
+    if "alpha" in post_c and "beta" in post_c:
+        mean_c = post_c["alpha"] / (post_c["alpha"] + post_c["beta"])
+        mean_t = post_t["alpha"] / (post_t["alpha"] + post_t["beta"])
+    else:
+        mean_c = post_c.get("mean", 0.0)
+        mean_t = post_t.get("mean", 0.0)
+    flipped_loss = max((mean_t - mean_c) + bayesian.expected_loss, 0.0)
+    flipped_bayes = replace(
+        bayesian,
+        prob_b_greater_a=1.0 - bayesian.prob_b_greater_a,
+        expected_loss=flipped_loss,
+        credible_interval=(
+            -bayesian.credible_interval[1],
+            -bayesian.credible_interval[0],
+        ),
+    )
+    return flipped_freq, flipped_bayes
+
+
 def _suggest_next_steps(
     decision: str,
     signal_strength: str,
@@ -137,6 +176,7 @@ def _suggest_next_steps(
     segmentation: Optional[SegmentResult],
     novelty: Optional[NoveltyCheckResult],
     has_covariate: bool,
+    interim_shortfall: bool = False,
 ) -> list[str]:
     """Generate context-aware next-step suggestions based on the decision and diagnostics.
 
@@ -181,7 +221,26 @@ def _suggest_next_steps(
 
     # --- Priority 4: Decision-specific guidance ---
     has_simpsons = segmentation is not None and segmentation.simpsons_paradox
-    if decision == "Inconclusive" and not srm.has_mismatch and not has_simpsons:
+    if decision == "Inconclusive" and interim_shortfall:
+        # The registered planned N has not been reached.  Completing the
+        # pre-registered plan is the opposite of optional stopping, so the
+        # usual "do not extend" advice does not apply here.
+        steps.append(
+            "Continue the experiment to the registered planned sample size before "
+            "re-analyzing. Completing the pre-registered plan is not optional "
+            "stopping — stopping early because results look good is."
+        )
+        steps.append(
+            "If continuing is impossible (e.g., the experiment was force-stopped), "
+            "document why, treat this analysis as exploratory, and re-register a "
+            "smaller-N plan for any follow-up."
+        )
+        steps.append(
+            "If you need the ability to act on interim looks in future experiments, "
+            "use a sequential testing framework (group sequential design or always-valid "
+            "confidence sequences) that formally controls for repeated looks."
+        )
+    elif decision == "Inconclusive" and not srm.has_mismatch and not has_simpsons:
         ci_width = abs(frequentist.ci_upper - frequentist.ci_lower)
         point_est = abs(frequentist.point_estimate)
 
@@ -339,13 +398,19 @@ def generate_recommendation(
     monitoring_prob_threshold: float = 0.85,
     twyman_min_baseline: float = 0.01,
     manifest: Optional[dict] = None,
+    higher_is_better: bool = True,
 ) -> Recommendation:
     """Apply decision state machine to produce a shipping recommendation.
 
-    Design note: This engine requires both frequentist significance AND
-    Bayesian P(B>A) > 95% to recommend "Ship". Most production systems use
-    one framework; the dual requirement is a deliberate conservative choice
-    that showcases fluency in both paradigms.
+    Design note: The Ship gate is frequentist (p < α with a positive effect);
+    the Bayesian layer supplies the *risk metrics* — expected loss vs
+    ``loss_tolerance``, the likely-harmful (P(B>A) < 5%) No-Ship branch, and
+    the 85–95% Ship-with-Monitoring zone. The engine also requires Bayesian
+    P(B>A) > 95% alongside significance, but note that with the default
+    uninformative priors this is implied by frequentist significance at any
+    realistic sample size — it is a cross-check and teaching device, not an
+    independent second witness. Most production systems pre-commit to a
+    single framework.
 
     Parameters
     ----------
@@ -375,12 +440,31 @@ def generate_recommendation(
         relative lifts that are not informative).
     manifest : dict, optional
         Pre-registration manifest snapshot.  Stored on the Recommendation
-        for reproducibility along with a content hash.
+        for reproducibility along with a content hash.  If it contains
+        ``planned_n_total`` and the observed N falls short of it, the
+        analysis is marked interim and Ship-class recommendations are
+        withheld (No-Ship is not withheld — harm signals on interim data
+        are safety information).
+    higher_is_better : bool, default True
+        Metric direction.  Set False for metrics where a decrease is good
+        (latency, error rate, churn).  Results are then evaluated and
+        reported in "improvement space" (positive = metric decreased).
+        Note: ``check_novelty`` operates on raw values and assumes
+        higher-is-better; interpret its output accordingly.
     """
     flags: list[str] = []
     decision: str
     reason: str
     signal_strength: str = ""
+    interim_shortfall: bool = False
+    conf_pct = (1 - frequentist.alpha) * 100
+
+    if not higher_is_better:
+        frequentist, bayesian = _flip_direction(frequentist, bayesian)
+        flags.append(
+            "Metric direction: lower-is-better. Effects are reported in "
+            "improvement space (positive = metric decreased)."
+        )
 
     # --- Decision state machine ---
     if srm.has_mismatch:
@@ -406,13 +490,24 @@ def generate_recommendation(
         and _has_significant_conflicting_segment(segmentation, frequentist.alpha)
     ):
         decision = "Inconclusive"
+        mix_note = (
+            "A segment-mix imbalance between arms was also detected — consistent with a "
+            "true Simpson's paradox (composition effect)."
+            if getattr(segmentation, "mix_imbalance", False)
+            else "Segment mixes are balanced across arms, so this looks like heterogeneous "
+            "treatment effects (HTE) rather than a composition artifact — some segments "
+            "genuinely respond differently."
+        )
         reason = (
-            "Simpson's Paradox was detected — the aggregate result contradicts the segment-level "
-            "results, and at least one *conflicting* segment is significant under Holm-adjusted "
-            "p-values. The overall metric is misleading due to a composition effect across segments."
+            "A significant segment sign reversal was detected — at least one non-trivial "
+            "segment opposes the aggregate effect's sign under Holm-adjusted p-values, so "
+            "the aggregate metric is misleading on its own. " + mix_note
         )
         signal_strength = "none"
-        flags.append("Simpson's Paradox detected (significance-gated, Holm-adjusted)")
+        flags.append(
+            "Segment sign reversal detected (Simpson's-paradox check; significance-gated, "
+            "Holm-adjusted)"
+        )
     elif (
         frequentist.is_significant
         and bayesian.prob_b_greater_a > 0.95
@@ -423,17 +518,19 @@ def generate_recommendation(
             f"Both analyses agree: the frequentist test is significant (p={frequentist.p_value:.4f}) "
             f"and the Bayesian analysis shows {bayesian.prob_b_greater_a:.1%} probability that "
             f"treatment is better, with an expected loss of {bayesian.expected_loss:.5f}. "
-            f"The effect ({frequentist.point_estimate:+.4f}) is positive and the confidence interval "
-            f"[{frequentist.ci_lower:.4f}, {frequentist.ci_upper:.4f}] does not cross zero."
+            f"The effect ({frequentist.point_estimate:+.4f}) is positive, with a "
+            f"{conf_pct:.0f}% confidence interval of "
+            f"[{frequentist.ci_lower:.4f}, {frequentist.ci_upper:.4f}]."
         )
         signal_strength = "strong"
     elif frequentist.is_significant and frequentist.point_estimate < 0:
         decision = "No-Ship"
         reason = (
             f"The treatment has a statistically significant negative effect "
-            f"(p={frequentist.p_value:.4f}, effect={frequentist.point_estimate:+.4f}). "
-            f"The confidence interval [{frequentist.ci_lower:.4f}, {frequentist.ci_upper:.4f}] "
-            f"is entirely below zero — the treatment is making things worse."
+            f"(p={frequentist.p_value:.4f}, effect={frequentist.point_estimate:+.4f}), "
+            f"with a {conf_pct:.0f}% confidence interval of "
+            f"[{frequentist.ci_lower:.4f}, {frequentist.ci_upper:.4f}] — the treatment "
+            f"is making the metric worse."
         )
         signal_strength = "strong"
     elif bayesian.prob_b_greater_a < 0.05:
@@ -462,7 +559,7 @@ def generate_recommendation(
         decision = "No Effect"
         reason = (
             f"Confident null: the test is not significant (p={frequentist.p_value:.4f}) and the "
-            f"95% confidence interval [{frequentist.ci_lower:+.4f}, {frequentist.ci_upper:+.4f}] "
+            f"{conf_pct:.0f}% confidence interval [{frequentist.ci_lower:+.4f}, {frequentist.ci_upper:+.4f}] "
             f"is entirely within the practical-significance margin "
             f"of ±{practical_significance_threshold:.4f}. The treatment does not produce a "
             f"practically meaningful effect in either direction."
@@ -525,6 +622,14 @@ def generate_recommendation(
             "Possible Simpson's-style reversal detected, but neither the aggregate nor segments "
             "reached significance — likely noise. Investigate before drawing conclusions."
         )
+
+    # --- Traffic-mix diagnostic (upstream cause of true Simpson's) ---
+    if (
+        segmentation is not None
+        and getattr(segmentation, "mix_details", None)
+        and not any("mix differs" in f.lower() for f in flags)
+    ):
+        flags.append(segmentation.mix_details)
 
     # --- Practical significance gate ---
     if (
@@ -662,6 +767,7 @@ def generate_recommendation(
             "twyman_min_baseline": twyman_min_baseline,
             "practical_significance_threshold": practical_significance_threshold,
             "lift_warning_threshold": lift_warning_threshold,
+            "higher_is_better": higher_is_better,
         }
         for key, actual in as_run.items():
             if key in manifest:
@@ -688,6 +794,30 @@ def generate_recommendation(
                         f"planned_n_total: registered={planned}, as-run={actual_total} "
                         f"(under-powered: <50% of planned exposure)"
                     )
+                # Planned-N gate: pre-registration is only meaningful if the
+                # engine refuses to certify results on partial exposure.  Any
+                # shortfall vs the registered plan marks the analysis interim
+                # and withholds Ship-class decisions.  No-Ship is deliberately
+                # NOT withheld: a harm signal on interim data is safety
+                # information, not a premature victory lap.
+                if actual_total < planned:
+                    interim_shortfall = True
+                    flags.append(
+                        f"Interim analysis: observed N ({actual_total:,}) is below the "
+                        f"registered planned N ({planned:,}). Results are exploratory "
+                        f"until the planned exposure is reached."
+                    )
+                    if decision in ("Ship", "Ship with Monitoring"):
+                        previous = decision
+                        decision = "Inconclusive"
+                        signal_strength = "moderate"
+                        reason = (
+                            f"The evidence currently leans {previous}, but only "
+                            f"{actual_total:,} of the {planned:,} registered planned users "
+                            f"have been observed. Per the pre-registered plan this is an "
+                            f"interim look — certifying a Ship now would be optional "
+                            f"stopping. Continue to the planned exposure and re-analyze."
+                        )
 
         if manifest_drift:
             flags.append(
@@ -709,6 +839,7 @@ def generate_recommendation(
             "twyman_min_baseline": twyman_min_baseline,
             "practical_significance_threshold": practical_significance_threshold,
             "lift_warning_threshold": lift_warning_threshold,
+            "higher_is_better": higher_is_better,
         },
     }
     if novelty is not None:
@@ -724,6 +855,7 @@ def generate_recommendation(
         segmentation=segmentation,
         novelty=novelty,
         has_covariate=has_covariate,
+        interim_shortfall=interim_shortfall,
     )
 
     return Recommendation(

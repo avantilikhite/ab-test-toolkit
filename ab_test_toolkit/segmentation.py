@@ -10,7 +10,15 @@ from scipy import stats as sp_stats
 
 @dataclass
 class SegmentResult:
-    """Result of segmented experiment analysis."""
+    """Result of segmented experiment analysis.
+
+    Note on naming: ``simpsons_paradox`` flags a *segment sign reversal* —
+    at least one non-trivial segment whose effect opposes the aggregate
+    sign.  A textbook Simpson's paradox additionally requires a segment-mix
+    imbalance between arms to drive the reversal; that upstream signature
+    is reported separately via ``mix_imbalance`` / ``mix_p_value``.  The
+    field name is retained for API stability.
+    """
 
     segment_results: List[Dict[str, Any]]
     n_segments: int
@@ -19,6 +27,9 @@ class SegmentResult:
     simpsons_paradox: bool
     simpsons_details: Optional[str] = None
     multiple_comparisons_note: Optional[str] = None
+    mix_imbalance: bool = False
+    mix_p_value: Optional[float] = None
+    mix_details: Optional[str] = None
 
 
 def _treatment_effect(ctrl: np.ndarray, treat: np.ndarray) -> Dict[str, Any]:
@@ -143,28 +154,69 @@ def segment_analysis(
         valid_total_n += result["n"]
 
         seg_sign = np.sign(result["estimate"])
-        if agg_sign != 0 and seg_sign != 0 and seg_sign != agg_sign and abs(result["estimate"]) > 0.001:
+        # Scale-aware noise floor: ignore reversals smaller than 1% of the
+        # aggregate effect's magnitude (a fixed absolute epsilon would be
+        # meaningless for dollar-scale or rare-rate metrics).
+        reversal_floor = 0.01 * abs(aggregate_estimate)
+        if agg_sign != 0 and seg_sign != 0 and seg_sign != agg_sign and abs(result["estimate"]) > reversal_floor:
             paradox_segments.append(str(seg))
             paradox_share += result["n"]
 
-    # Simpson's Paradox: flag when any non-trivial segment (>=20% of valid sample)
-    # reverses the aggregate effect's sign. The textbook example is a 2-segment
-    # case where one large segment contradicts the aggregate, so a strict-majority
-    # rule is too conservative — a meaningful contradiction is enough to require
-    # human review.
+    # Segment sign reversal: flag when any non-trivial segment (>=20% of valid
+    # sample) reverses the aggregate effect's sign. The textbook Simpson case
+    # is a 2-segment example where one large segment contradicts the aggregate,
+    # so a strict-majority rule is too conservative — a meaningful contradiction
+    # is enough to require human review.
     paradox_fraction = paradox_share / valid_total_n if valid_total_n > 0 else 0.0
     simpsons_paradox = (
         len(paradox_segments) > 0
         and n_valid_segments >= 2
         and paradox_fraction >= 0.20
     )
+
+    # Traffic-mix diagnostic: the upstream signature of a true Simpson's
+    # paradox is that the two arms have different segment mixes.  Chi-square
+    # test of independence on the group × segment contingency table.  A
+    # strict threshold (0.001) keeps false alarms rare, mirroring SRM logic.
+    mix_imbalance = False
+    mix_p_value: Optional[float] = None
+    mix_details: Optional[str] = None
+    try:
+        crosstab = pd.crosstab(df[group_col], df[segment_col])
+        if crosstab.shape[0] == 2 and crosstab.shape[1] >= 2 and (crosstab.values.sum(axis=1) > 0).all():
+            _, mix_p, _, _ = sp_stats.chi2_contingency(crosstab.values)
+            mix_p_value = float(mix_p)
+            if mix_p_value < 0.001:
+                mix_imbalance = True
+                shares = crosstab.div(crosstab.sum(axis=1), axis=0)
+                gap = (shares.iloc[0] - shares.iloc[1]).abs()
+                worst_seg = gap.idxmax()
+                mix_details = (
+                    f"Segment mix differs between arms (chi-square p={mix_p_value:.2e}); "
+                    f"largest share gap in segment '{worst_seg}' "
+                    f"({gap.max():.1%} between arms). This is the structural setup for "
+                    f"Simpson's paradox — investigate the assignment mechanism."
+                )
+    except (ValueError, ZeroDivisionError):
+        mix_p_value = None
+
     simpsons_details = None
     if simpsons_paradox:
         simpsons_details = (
-            f"Aggregate effect sign differs from segment(s) "
+            f"Segment sign reversal: aggregate effect sign differs from segment(s) "
             f"{', '.join(paradox_segments)} representing "
             f"{paradox_fraction:.0%} of valid sample."
         )
+        if mix_imbalance:
+            simpsons_details += (
+                " A segment-mix imbalance between arms was also detected — "
+                "consistent with a true Simpson's paradox (composition effect)."
+            )
+        else:
+            simpsons_details += (
+                " Segment mixes are balanced across arms, so this is heterogeneous "
+                "treatment effects (HTE), not a composition artifact."
+            )
 
     # Holm-Bonferroni adjusted p-values
     raw_p_values = [seg["p_value"] for seg in segment_results]
@@ -185,4 +237,7 @@ def segment_analysis(
         simpsons_paradox=simpsons_paradox,
         simpsons_details=simpsons_details,
         multiple_comparisons_note=multiple_comparisons_note,
+        mix_imbalance=mix_imbalance,
+        mix_p_value=mix_p_value,
+        mix_details=mix_details,
     )

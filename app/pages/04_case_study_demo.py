@@ -144,23 +144,33 @@ else:
         "summary": f"χ² = {srm_result.chi2_statistic:.2f}, p = {srm_result.p_value:.4f}",
     })
 
-# Simpson's Paradox
+# Segment sign reversal (Simpson's check)
 if _seg_result_for_card is not None:
     if _seg_result_for_card.simpsons_paradox:
         _diag.append({
-            "name": "Simpson's Paradox",
+            "name": "Segment sign reversal (Simpson's check)",
             "status": "fail",
             "summary": "aggregate contradicts segments",
             "detail": (
                 f"{_seg_result_for_card.simpsons_details} The headline result is misleading "
-                f"due to a composition effect across segments. Trust the within-segment effects."
+                f"on its own. Trust the within-segment effects."
             ),
         })
     else:
         _diag.append({
-            "name": "Simpson's Paradox",
+            "name": "Segment sign reversal (Simpson's check)",
             "status": "pass",
             "summary": "segments consistent",
+        })
+    if getattr(_seg_result_for_card, "mix_imbalance", False):
+        _diag.append({
+            "name": "Segment-mix imbalance",
+            "status": "warn",
+            "summary": "arms have different segment mixes",
+            "detail": (
+                f"{_seg_result_for_card.mix_details} A mix imbalance is the structural "
+                f"setup for a true Simpson's paradox even when per-segment effects look clean."
+            ),
         })
 
 # Novelty

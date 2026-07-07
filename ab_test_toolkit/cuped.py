@@ -81,6 +81,10 @@ def _ancova_treatment_ci(
     SE properly accounts for theta-from-data uncertainty (unlike the Welch
     CI on residuals), which is the right fix for the canonical CUPED
     "ignored degrees of freedom" critique.
+
+    The SE is the HC2 heteroskedasticity-robust (leverage-adjusted) sandwich
+    estimator, keeping the CUPED CI consistent with the rest of the toolkit,
+    which never assumes equal variances (Welch everywhere, unpooled z).
     """
     n_c, n_t = len(ctrl_outcome), len(treat_outcome)
     n = n_c + n_t
@@ -103,8 +107,14 @@ def _ancova_treatment_ci(
     df = n - 3
     if df <= 0:
         return float(beta[1]), (float(beta[1]), float(beta[1]))
-    sigma2 = float(resid @ resid / df)
-    se_b1 = float(np.sqrt(sigma2 * XtX_inv[1, 1]))
+    # HC2 sandwich: Var(β) = (X'X)⁻¹ X' diag(e_i²/(1-h_i)) X (X'X)⁻¹,
+    # where h_i are the leverages.  Clip leverages away from 1 for stability.
+    H_diag = np.einsum("ij,jk,ik->i", X, XtX_inv, X)
+    H_diag = np.clip(H_diag, 0.0, 1.0 - 1e-10)
+    omega = resid**2 / (1.0 - H_diag)
+    meat = (X * omega[:, None]).T @ X
+    var_beta = XtX_inv @ meat @ XtX_inv
+    se_b1 = float(np.sqrt(max(var_beta[1, 1], 0.0)))
     t_crit = sp_stats.t.ppf(1 - alpha / 2, df)
     est = float(beta[1])
     return est, (est - t_crit * se_b1, est + t_crit * se_b1)
@@ -124,8 +134,9 @@ def cuped_adjust(
     * ``theta`` is computed via the canonical pooled formula
       ``Cov(Y, X) / Var(X)`` (Deng et al., 2013).
     * ``adjusted_estimate`` and ``adjusted_ci`` are taken from an OLS
-      ANCOVA fit ``Y ~ T + X``, so the CI accounts for uncertainty in
-      ``theta`` itself.  For randomized experiments with balanced
+      ANCOVA fit ``Y ~ T + X`` with HC2 heteroskedasticity-robust SEs,
+      so the CI accounts for uncertainty in ``theta`` itself and does
+      not assume equal error variances across arms.  For randomized experiments with balanced
       covariates the ANCOVA point estimate equals the residual-based
       CUPED estimate to first order, but the SE is correctly larger
       than the naive Welch-on-residuals SE in finite samples.

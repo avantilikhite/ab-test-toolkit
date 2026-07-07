@@ -116,7 +116,8 @@ def z_test_from_stats(
 
     # Z statistic and p-value still use the unpooled SE — Newcombe is for the CI only.
     z_stat = point_estimate / se if se > 0 else (float("inf") if point_estimate != 0 else 0.0)
-    p_value = float(2 * (1 - stats.norm.cdf(abs(z_stat)))) if se > 0 else (0.0 if point_estimate != 0 else 1.0)
+    # Survival function avoids catastrophic cancellation in 1 - cdf for large |z|.
+    p_value = float(2 * stats.norm.sf(abs(z_stat))) if se > 0 else (0.0 if point_estimate != 0 else 1.0)
 
     # Newcombe hybrid score CI — well-behaved at boundaries where Wald collapses to 0.
     ci_lower, ci_upper = _newcombe_diff_ci(control_count, control_total, treatment_count, treatment_total, alpha)
@@ -247,7 +248,8 @@ def welch_t_test_from_stats(
     )
     df = num / denom if denom > 0 else 1.0
 
-    p_value = float(2 * (1 - stats.t.cdf(abs(t_stat), df)))
+    # Survival function avoids catastrophic cancellation in 1 - cdf for large |t|.
+    p_value = float(2 * stats.t.sf(abs(t_stat), df))
 
     t_crit = stats.t.ppf(1 - alpha / 2, df)
     ci_lower = point_estimate - t_crit * se

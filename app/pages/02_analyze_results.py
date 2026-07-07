@@ -634,23 +634,33 @@ elif df is not None:
                 "summary": f"{stratum_srm.n_strata} days, all clean (Holm)",
             })
 
-    # Simpson's
+    # Segment sign reversal (Simpson's check) + traffic-mix diagnostic
     if seg_result is not None:
         if seg_result.simpsons_paradox:
             diagnostics.append({
-                "name": "Simpson's Paradox",
+                "name": "Segment sign reversal (Simpson's check)",
                 "status": "fail",
                 "summary": "aggregate contradicts segments",
                 "detail": (
-                    f"{seg_result.simpsons_details} The headline result is misleading due to a "
-                    f"composition effect across segments. Trust the within-segment effects."
+                    f"{seg_result.simpsons_details} The headline result is misleading on its "
+                    f"own. Trust the within-segment effects."
                 ),
             })
         else:
             diagnostics.append({
-                "name": "Simpson's Paradox",
+                "name": "Segment sign reversal (Simpson's check)",
                 "status": "pass",
                 "summary": "segments consistent",
+            })
+        if getattr(seg_result, "mix_imbalance", False):
+            diagnostics.append({
+                "name": "Segment-mix imbalance",
+                "status": "warn",
+                "summary": "arms have different segment mixes",
+                "detail": (
+                    f"{seg_result.mix_details} A mix imbalance is the structural setup for a "
+                    f"true Simpson's paradox even when per-segment effects look clean."
+                ),
             })
 
     # Novelty
