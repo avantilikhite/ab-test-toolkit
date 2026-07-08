@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](./pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](./pyproject.toml)
 
-A rigorously tested Python toolkit and interactive app for designing, analyzing, and making decisions on A/B experiments — built with production-style engineering discipline (typed results, input validation, 250+ tests). It is a fixed-horizon, single-metric analyzer, not a substitute for a full experimentation platform.
+A rigorously tested Python toolkit and interactive app for designing, analyzing, and making decisions on A/B experiments — built with production-style engineering discipline (typed results, input validation). It is a fixed-horizon, single-metric analyzer, not a substitute for a full experimentation platform.
 
 **🚀 Try it live → [ab-test-toolkit.streamlit.app](https://ab-test-toolkit.streamlit.app/)**
 
